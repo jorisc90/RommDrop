@@ -146,3 +146,130 @@ def test_run_sync_marks_done(monkeypatch):
     assert gui.sync_session.phase == "done"
     names = [i["name"] for i in gui.items]
     assert any(n.startswith("Done:") for n in names)
+
+
+def test_sync_saves_after_download_pulls_missing_save(monkeypatch, tmp_path):
+    """After a ROM download, server saves for that ROM are synced down."""
+    import datetime
+
+    gui = _make_gui(monkeypatch)
+
+    class FakeServerSave:
+        def __init__(self, save_id, file_name, updated_at):
+            self.id = save_id
+            self.file_name = file_name
+            self.updated_at = updated_at
+
+    downloaded = []
+
+    class FakeClient:
+        def __init__(self, *a, **k):
+            pass
+
+        def list_saves(self, rom_id):
+            return [FakeServerSave(
+                99, "Mario (USA).srm [2026-08-05_12-00-00].srm",
+                datetime.datetime(2026, 8, 5, 12, 0, 0,
+                                  tzinfo=datetime.timezone.utc))]
+
+        def download_save(self, op, dest, device_id):
+            downloaded.append((dest, device_id))
+            Path(dest).write_bytes(b"server-save")
+
+        def confirm_download(self, save_id, device_id):
+            pass
+
+    class FakeCfg:
+        device_id = "dev-1"
+        save_dirs = {"gba": ["saves/gba"]}
+
+    class FakeDisc:
+        def __call__(self, *a, **k):
+            return ("https://romm.test", "tok")
+
+    class FakeLoadCfg:
+        def __call__(self, *a, **k):
+            return FakeCfg()
+
+    import savesync.api
+    import savesync.cli
+
+    monkeypatch.setattr(savesync.api, "RomMClient", FakeClient)
+    monkeypatch.setattr(savesync.cli, "discover_creds", FakeDisc())
+    monkeypatch.setattr(savesync.cli, "load_cfg", FakeLoadCfg())
+    monkeypatch.setattr(savesync.cli, "STATE_PATH", tmp_path / "state.json")
+    gui.is_downloading = True
+
+    romm_drop.RETROBAT_ROOT = tmp_path
+    gui._sync_saves_after_download({"id": 5, "platform_fs_slug": "gba",
+                                    "name": "Mario"})
+
+    assert len(downloaded) == 1
+    dest, dev = downloaded[0]
+    assert dev == "dev-1"
+    # clean_server_filename strips the [timestamp] region
+    assert "Mario (USA).srm" in dest
+    assert "[2026" not in dest
+    assert "saves" in dest and "gba" in dest
+
+
+def test_sync_saves_after_download_keeps_newer_local(monkeypatch, tmp_path):
+    """auto: a local save newer than the server copy is left untouched."""
+    import datetime
+
+    gui = _make_gui(monkeypatch)
+
+    class FakeServerSave:
+        def __init__(self):
+            self.id = 7
+            self.file_name = "Mario.srm [2020-01-01_00-00-00].srm"
+            self.updated_at = datetime.datetime(2020, 1, 1,
+                                                tzinfo=datetime.timezone.utc)
+
+    downloaded = []
+
+    class FakeClient:
+        def __init__(self, *a, **k):
+            pass
+
+        def list_saves(self, rom_id):
+            return [FakeServerSave()]
+
+        def download_save(self, op, dest, device_id):
+            downloaded.append(dest)
+
+        def confirm_download(self, save_id, device_id):
+            pass
+
+    class FakeCfg:
+        device_id = "dev-1"
+        save_dirs = {"gba": ["saves/gba"]}
+
+    class FakeDisc:
+        def __call__(self, *a, **k):
+            return ("https://romm.test", "tok")
+
+    class FakeLoadCfg:
+        def __call__(self, *a, **k):
+            return FakeCfg()
+
+    import savesync.api
+    import savesync.cli
+
+    monkeypatch.setattr(savesync.api, "RomMClient", FakeClient)
+    monkeypatch.setattr(savesync.cli, "discover_creds", FakeDisc())
+    monkeypatch.setattr(savesync.cli, "load_cfg", FakeLoadCfg())
+    monkeypatch.setattr(savesync.cli, "STATE_PATH", tmp_path / "state.json")
+
+    romm_drop.RETROBAT_ROOT = tmp_path
+    # Place a local save newer than the 2020 server copy at the resolved path.
+    dest = tmp_path / "saves" / "gba" / "Mario.srm.srm"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(b"newer-local")
+    dest.touch()
+
+    gui._sync_saves_after_download({"id": 5, "platform_fs_slug": "gba",
+                                    "name": "Mario"})
+
+    assert downloaded == []
+    assert "already current" in gui.status_msg

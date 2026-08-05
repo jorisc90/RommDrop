@@ -400,10 +400,84 @@ class RommDropGUI:
             game_label = game.get('name', 'Game')
             self.status_msg = f"DROPPED: {game_label} ({len(files)} file{'s' if len(files) > 1 else ''})"
 
+            # After dropping the ROM, pull any save files for it from the server.
+            self._sync_saves_after_download(game)
+
         except Exception as e:
             self.status_msg = f"Error: {str(e)}"
 
         self.is_downloading = False
+
+    def _sync_saves_after_download(self, game):
+        """Sync this ROM's server saves down after download (auto policy).
+
+        Best-effort: any failure is surfaced in the status line but does not
+        undo the ROM download. `auto` keeps the newer of local/server timestamp;
+        for a fresh download there is usually no local save yet, so the server
+        copy is pulled down.
+        """
+        try:
+            from savesync.api import RomMClient
+            from savesync.cli import STATE_PATH, discover_creds, load_cfg
+            from savesync.models import SyncOperation
+            from savesync.scanner import clean_server_filename
+            import savesync.scanner as _scan
+            import os as _os
+            from datetime import datetime, timezone
+
+            rom_id = game.get('id')
+            slug = game.get('platform_fs_slug')
+            if not rom_id or not slug:
+                return
+
+            url, token = discover_creds("", "", "")
+            client = RomMClient(url, ("", token))
+            cfg = load_cfg(STATE_PATH)
+            if not cfg.device_id:
+                return
+
+            dirs = cfg.save_dirs.get(slug) or cfg.save_dirs.get("*", [])
+            if not dirs:
+                return
+
+            saves = client.list_saves(rom_id=rom_id)
+            if not saves:
+                return
+
+            root = RETROBAT_ROOT
+            save_root = Path(dirs[0])
+            base_dir = save_root if save_root.is_absolute() else root / save_root
+
+            added = 0
+            skipped = 0
+            for ss in saves:
+                dest = base_dir / clean_server_filename(ss.file_name)
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                # auto: prefer the newer timestamp; keep local if it's newer/equal
+                if dest.exists():
+                    local_ts = dest.stat().st_mtime
+                    server_ts = ss.updated_at.timestamp() if ss.updated_at else None
+                    if server_ts is not None and local_ts >= server_ts:
+                        skipped += 1
+                        continue
+                op = SyncOperation(save_id=ss.id, file_name=ss.file_name,
+                                   server_updated_at=ss.updated_at)
+                self.status_msg = f"Syncing save: {ss.file_name}"
+                client.download_save(op, str(dest), cfg.device_id)
+                if ss.updated_at is not None:
+                    _os.utime(dest, (ss.updated_at.timestamp(), ss.updated_at.timestamp()))
+                if ss.id:
+                    client.confirm_download(ss.id, cfg.device_id)
+                added += 1
+
+            game_label = game.get('name', 'Game')
+            if added:
+                self.status_msg = (f"DROPPED: {game_label} + {added} save"
+                                   f"{'s' if added > 1 else ''} synced")
+            elif skipped:
+                self.status_msg = f"DROPPED: {game_label} (saves already current)"
+        except Exception as exc:
+            self.status_msg = f"Save sync skipped: {exc}"
 
     def handle_mouse_click(self, pos):
         """Check if mouse click hit a list item or keyboard key."""

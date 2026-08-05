@@ -38,6 +38,13 @@ In the GUI, open **Save Sync** from the system list. Use the **D-Pad** to
 navigate, the **X Button** to cycle the conflict policy, and the **Y Button** to
 toggle the upload gate, then select **Run sync**.
 
+RommDrop also syncs saves automatically: when you download a ROM from the GUI,
+it asks the server whether that ROM has any save files and, if so, pulls them
+down into the right `saves/<platform>/` folder using the `auto` policy (the
+newer of local/server wins, so an existing newer local save is left alone while
+a missing one is fetched). This way your progress follows the game to the
+device right after you drop it.
+
 Planning is efficient: it only queries the server for the exact saves that exist
 locally, so it stays fast even on very large libraries. Downloaded files keep
 their original server timestamp, so an untouched download is recognised as a
