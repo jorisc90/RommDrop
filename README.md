@@ -13,6 +13,36 @@ RommDrop is a dead simple ROM downloader for RetroBat and EmulationStation. It p
 
 - U.I. Built with Pygame for easy borderless fullscreen and native controller input.
 
+- **Save & state sync** — two-way synchronization of your `saves/` folders with the
+  RomM server (download, upload, and conflict resolution). Runs both from the
+  GUI and from a terminal CLI; see "Save Sync" and "Command Line Interface" below.
+
+
+***Save Sync***
+
+RommDrop keeps your save files and savestates in sync with the RomM server
+across devices. It scans the save folders configured in
+`savesync/save_directories.json`, matches each local save to its ROM, and
+negotiates with the server:
+
+- **Downloads** saves that exist on the server but not locally.
+- **Uploads** saves that exist locally but not on the server (uploads on by default).
+- **No-ops** saves that already match on both sides.
+- **Conflicts** sit on both sides with differences, resolved by a policy:
+  - `auto` — keep the save with the newer `updated_at` timestamp (default)
+  - `keep_local` — push the local file up
+  - `take_server` — pull the server file down
+  - `skip` — do nothing on conflict
+
+In the GUI, open **Save Sync** from the system list. Use the **D-Pad** to
+navigate, the **X Button** to cycle the conflict policy, and the **Y Button** to
+toggle the upload gate, then select **Run sync**.
+
+Planning is efficient: it only queries the server for the exact saves that exist
+locally, so it stays fast even on very large libraries. Downloaded files keep
+their original server timestamp, so an untouched download is recognised as a
+no-op on the next sync instead of being re-uploaded.
+
 
 ***Setup and Installation***
 
