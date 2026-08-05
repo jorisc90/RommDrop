@@ -80,3 +80,51 @@ The interface is designed for 100% controller navigation. There is unfortunately
 - Y Button: Instant jump to Search Mode.
 
 - X Button: Backspace (delete last character) while typing.
+
+
+***Command Line Interface (save sync)***
+
+RommDrop bundles a save/state sync CLI (`savesync/cli.py`) that runs the full
+scan -> match -> negotiate -> execute pipeline from the terminal (no pygame
+needed). Run it as a module so the package imports resolve:
+
+    python -m savesync.cli <command> [options]
+
+Positional commands:
+
+- register — verify or register the sync device with the RomM server
+- plan     — scan + negotiate only (read-only, no downloads/uploads or writes)
+- sync     — scan, negotiate and execute (uploads enabled by default)
+
+Global options (placed before the command):
+
+- `--url URL`        RomM base URL (overrides env/config)
+- `--token TOKEN`    RomM API token (overrides env/config)
+- `--config CONFIG`  path to config.json (default: RommDrop/config.json)
+- `--root ROOT`      save root dir (default: current directory)
+- `--platform PLATFORM`  only sync one platform fs_slug, e.g. gbc
+- `--debug`          verbose engine output
+
+sync-only options:
+
+- `--no-upload`      disable uploads (default: uploads enabled)
+- `--policy {auto,keep_local,skip,take_server}`  conflict policy (default: auto)
+- `--dry-run`        negotiate + preview, do not execute
+
+Examples:
+
+    python -m savesync.cli register --url https://romm.example.com --token rmm_xxx
+    python -m savesync.cli plan --root C:/RetroBat
+    python -m savesync.cli sync --root C:/RetroBat
+    python -m savesync.cli sync --root C:/RetroBat --no-upload --policy skip
+
+Conflict policies:
+
+- `auto` — newest `updated_at` wins; ties keep the local file (default)
+- `keep_local` — push the local file up
+- `take_server` — pull the server file down
+- `skip` — do nothing on conflict
+
+Note: the `--url`/`--token` flags are optional if the same details are already
+available via the environment (`ROMM_URL` / `ROMM_TOKEN`), `~/.hermes/secrets.json`,
+or `config.json` (see Authentication above).
