@@ -1,0 +1,23 @@
+{
+  "_comment": [
+    "Editable skeleton for save-dir discovery. Key = RomM platform fs_slug",
+    "from config.json/tested server. Value = list of local directories (paths",
+    "relative to the app's script dir resident release the app runs next to",
+    "RETROBAT_ROOT). Adjust per your RetroBAT install; the Phase-1 read-only",
+    "audit prints what each map actually finds so you can fix it without",
+    "guessing. Save files (.srm/.sav/...) vs savestates (.state/slot files)",
+    "are matched by extension in scanner.py.",
+    "",
+    "Scanning walks each entry recursively. A '* ' wildcard key is a fallback",
+    "glob for any platform_fs_slug not listed."
+  ],
+  "nes":   ["saves/nes", "system/retroarch/saves/nes"],
+  "snes":  ["saves/snes", "system/retroarch/saves/snes"],
+  "gb":    ["saves/gb", "system/retroarch/saves/gb"],
+  "gbc":   ["saves/gbc", "system/retroarch/saves/gbc"],
+  "gba":   ["saves/gba", "system/retroarch/saves/gba"],
+  "genesis":"saves/genesis", "md": ["saves/genesis"],
+  "ps1":   ["saves/ps1"],
+  "ps2":   ["saves/ps2"],
+  "*":     ["saves", "system/retroarch/saves"]
+}

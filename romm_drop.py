@@ -63,6 +63,10 @@ class RommDropGUI:
         self.progress = 0
         self.running = True
 
+        # Save-sync screen state (driven by the pygame-free SyncSession)
+        self.sync_session = None
+        self.is_syncing = False
+
         # Store rects for mouse hit-testing
         self.list_item_rects = []   # [(rect, global_idx), ...]
         self.kb_key_rects = []      # [(rect, char), ...]
@@ -75,7 +79,8 @@ class RommDropGUI:
             r = requests.get(f"{BASE_URL}/platforms", auth=AUTH, headers=HEADERS, timeout=10)
             if r.status_code == 200:
                 raw = sorted(r.json(), key=lambda x: x['name'])
-                self.cached_platforms = [{"name": "🔍 [ SEARCH / MANUAL ENTRY ]", "type": "SEARCH_MODE"}] + \
+                self.cached_platforms = [{"name": " [ SEARCH / MANUAL ENTRY ]", "type": "SEARCH_MODE"},
+                                         {"name": " [ SAVE SYNC ]", "type": "SYNC_MODE"}] + \
                                         [{"name": p['name'], "type": "PLATFORM", "id": p['id'], "slug": p['slug']} for p in raw]
                 self.show_platforms()
             else:
@@ -141,9 +146,12 @@ class RommDropGUI:
             self.draw_keyboard(list_width + 80)
 
         bar_y = self.screen_height - 90
-        if self.is_downloading:
+        if self.is_downloading or (self.is_syncing and self.sync_session and self.sync_session.phase == "running"):
+            fill = self.progress if self.is_downloading else (
+                self.sync_session.progress[0] / max(1, self.sync_session.progress[1])
+            )
             pygame.draw.rect(self.screen, COLORS["panel"], (50, bar_y, self.screen_width - 100, 25), border_radius=12)
-            pygame.draw.rect(self.screen, COLORS["success"], (50, bar_y, int((self.screen_width - 100) * self.progress), 25), border_radius=12)
+            pygame.draw.rect(self.screen, COLORS["success"], (50, bar_y, int((self.screen_width - 100) * fill), 25), border_radius=12)
         else:
             self.screen.blit(self.font_small.render(self.status_msg, True, COLORS["text"]), (50, bar_y))
 
@@ -188,10 +196,130 @@ class RommDropGUI:
             self.items = []
             self.query = ""
             self.status_msg = "Enter a game title..."
+        elif item['type'] == "SYNC_MODE":
+            self.enter_sync()
         elif item['type'] == "GAME":
             self.start_download(item['data'])
         elif item['type'] == "BACK_ACTION":
             self.show_platforms()
+        elif self.state == "SYNC":
+            if item['type'] == "SYNC_RUN":
+                self.run_sync()
+            elif item['type'] == "SYNC_POLICY":
+                self.cycle_sync_policy()
+            elif item['type'] == "SYNC_UPLOAD":
+                self.toggle_upload_gate()
+
+    # ------------------------------------------------------------------ save sync
+
+    def enter_sync(self):
+        """Open the save-sync screen and start a read-only plan scan."""
+        self.state = "SYNC"
+        self.sync_session = None
+        self.is_syncing = False
+        self.items = [
+            {"name": "Planning save sync...", "type": "SYNC_INFO"},
+            {"name": "cd.. [ Back to Systems ]", "type": "BACK_ACTION"},
+        ]
+        self.selected_index = 0
+        self.scroll_offset = 0
+        self.status_msg = "Scanning saves..."
+        threading.Thread(target=self.sync_plan_worker, daemon=True).start()
+
+    def sync_plan_worker(self):
+        """Read-only: resolve creds, ensure device, scan + negotiate.
+
+        Runs on a worker thread; fills self.sync_session (pygame-free
+        SyncSession) and refreshes the item list when done.
+        """
+        try:
+            from savesync.api import RomMClient
+            from savesync.cli import STATE_PATH, discover_creds, ensure_device, load_cfg
+            from savesync.pipeline import SyncSession, scan_negotiate
+
+            url, token = discover_creds()
+            client = RomMClient(url, ("", token))
+            cfg = load_cfg(STATE_PATH)
+            ensure_device(client, cfg, STATE_PATH)
+            engine, plan = scan_negotiate(client, cfg, RETROBAT_ROOT)
+            session = SyncSession(engine, plan, client)
+            session.phase = "ready"
+            session.scan()  # build the conflict preview for the default policy
+            self.sync_session = session
+        except SystemExit as exc:
+            self.status_msg = f"Sync creds missing: {exc}"
+        except Exception as exc:  # surface to the GUI, don't crash the app
+            self.status_msg = f"Sync error: {exc}"
+        self.refresh_sync_items()
+
+    def refresh_sync_items(self):
+        """Rebuild the SYNC screen rows from the current session state."""
+        if not self.sync_session:
+            self.items = [
+                {"name": self.status_msg, "type": "SYNC_INFO"},
+                {"name": "cd.. [ Back to Systems ]", "type": "BACK_ACTION"},
+            ]
+            self.selected_index = 0
+            return
+
+        s = self.sync_session
+        rows = [
+            {"name": f"Device {s.plan.session_id}  [{s.summary}]", "type": "SYNC_INFO"},
+        ]
+        # per-conflict preview under the current policy
+        for file_name, resolved in s.preview_lines:
+            rows.append({"name": f"  {file_name}  -> {resolved}", "type": "SYNC_INFO"})
+        rows += [
+            {"name": f"Policy: {s.policy}   (X)", "type": "SYNC_POLICY"},
+            {"name": f"Allow uploads: {'ON' if s.allow_upload else 'OFF'}   (Y)", "type": "SYNC_UPLOAD"},
+        ]
+        if s.phase == "error":
+            rows.append({"name": f"ERROR: {s.error}", "type": "SYNC_INFO"})
+        elif s.phase == "done" and s.result:
+            r = s.result
+            rows.append({"name": f"Done: {r.uploaded} up / {r.downloaded} down / {len(r.failed)} failed",
+                         "type": "SYNC_INFO"})
+        else:
+            rows.append({"name": "Run sync (A)", "type": "SYNC_RUN"})
+        rows.append({"name": "cd.. [ Back to Systems ]", "type": "BACK_ACTION"})
+        self.items = rows
+        self.selected_index = min(self.selected_index, len(rows) - 1)
+        self.scroll_offset = 0
+        if self.is_syncing and s.phase == "running":
+            self.status_msg = f"Syncing... {s.progress[0]}/{s.progress[1]}"
+
+    def cycle_sync_policy(self):
+        if not self.sync_session:
+            return
+        order = ["auto", "keep_local", "take_server", "skip"]
+        nxt = order[(order.index(self.sync_session.policy) + 1) % len(order)]
+        self.sync_session.set_policy(nxt)
+        self.status_msg = f"Policy: {nxt}"
+        self.refresh_sync_items()
+
+    def toggle_upload_gate(self):
+        if not self.sync_session:
+            return
+        on = self.sync_session.toggle_upload()
+        self.status_msg = f"Allow uploads: {'ON' if on else 'OFF'}"
+        self.refresh_sync_items()
+
+    def run_sync(self):
+        if not self.sync_session or self.is_syncing:
+            return
+        if self.sync_session.phase in ("error",):
+            return
+        self.is_syncing = True
+        self.status_msg = "Syncing..."
+        threading.Thread(target=self.sync_run_worker, daemon=True).start()
+
+    def sync_run_worker(self):
+        try:
+            self.sync_session.execute()
+        except Exception as exc:  # noqa: BLE001  sync_run_worker already guards
+            self.status_msg = f"Sync error: {exc}"
+        self.is_syncing = False
+        self.refresh_sync_items()
 
     def handle_kb_char(self, char):
         """Shared logic for typing a KB character, whether from controller or mouse."""
@@ -359,12 +487,17 @@ class RommDropGUI:
                     if event.button == 2:  # X Button
                         if self.state == "SEARCH" and self.search_focus == "keyboard":
                             self.query = self.query[:-1]
+                        elif self.state == "SYNC":
+                            self.cycle_sync_policy()
 
                     if event.button == 3:  # Y Button
-                        self.state = "SEARCH"
-                        self.search_focus = "keyboard"
-                        self.items = []
-                        self.query = ""
+                        if self.state == "SYNC":
+                            self.toggle_upload_gate()
+                        else:
+                            self.state = "SEARCH"
+                            self.search_focus = "keyboard"
+                            self.items = []
+                            self.query = ""
 
                     if event.button == 4:
                         self.selected_index = max(0, self.selected_index - 10)
