@@ -8,6 +8,7 @@ Phase-gated so nothing destroys data until the UI opts in:
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -26,7 +27,7 @@ CONFLICT_KEEP_LOCAL = "keep_local"
 CONFLICT_TAKE_SERVER = "take_server"
 CONFLICT_AUTO = "auto"
 CONFLICT_SKIP = "skip"
-DEFAULT_CONFLICT_POLICY = CONFLICT_SKIP  # safest default until UI offers choices
+DEFAULT_CONFLICT_POLICY = CONFLICT_AUTO  # newest updated_at wins; ties keep local
 
 
 @dataclass
@@ -64,7 +65,7 @@ class SyncEngine:
     # ------------------------------------------------------------ orchestrate
 
     def run(self, plan: SyncPlan, *, dry_run: bool = True,
-            allow_upload: bool = False,
+            allow_upload: bool = True,
             policy: str = DEFAULT_CONFLICT_POLICY,
             on_op: Callable[[int, int], None] | None = None) -> SyncResult:
         """Execute a plan (or, in dry-run/Phase 1, just report counts).
@@ -110,6 +111,7 @@ class SyncEngine:
         elif op.action == "download":
             dest = self._dest_path(op)
             self.client.download_save(op, dest, self.cfg.device_id)
+            self._stamp_server_mtime(dest, op.server_updated_at)
             if op.save_id:
                 self.client.confirm_download(op.save_id, self.cfg.device_id)
             result.downloaded += 1
@@ -168,12 +170,32 @@ class SyncEngine:
     def _conflict_download(self, op: SyncOperation, result: SyncResult) -> None:
         dest = self._dest_path(op)
         self.client.download_save(op, dest, self.cfg.device_id)
+        self._stamp_server_mtime(dest, op.server_updated_at)
         if op.save_id:
             self.client.confirm_download(op.save_id, self.cfg.device_id)
         result.downloaded += 1
         op.resolved_as = "download"
 
     # -------------------------------------------------------------- plumbing
+
+    def _stamp_server_mtime(self, dest: str, server_updated_at) -> None:
+        """Set the downloaded file's mtime to the server save's updated_at.
+
+        Without this, a fresh download gets the *download time* as its mtime,
+        which is newer than the server save. The next scan would then flag it
+        as "Client save is newer than last sync" and want to re-upload a file
+        we just fetched. Stamping keeps untouched downloads as no-ops.
+        """
+        if not server_updated_at:
+            return
+        try:
+            ts = server_updated_at.timestamp()
+        except (AttributeError, OSError, ValueError):
+            return
+        try:
+            os.utime(dest, (ts, ts))
+        except OSError:
+            pass
 
     def _local_for(self, op: SyncOperation) -> LocalSave:
         """Rehydrate a LocalSave for upload from an operation.

@@ -15,15 +15,19 @@ with open(CONFIG_PATH) as f:
     config = json.load(f)
 
 BASE_URL = config['romm_url'].rstrip('/') + '/api'
-AUTH = (config['username'], config['password'])
+TOKEN = config.get('password') or config.get('username', '')
+AUTH = None  # Bearer token only; RomM serves 403 if a Basic auth header is sent
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept": "application/json",
     "X-Requested-With": "XMLHttpRequest"
 }
+# RomM 5.x expects a Bearer token on the API; basic-auth only works on legacy paths.
+if TOKEN:
+    HEADERS["Authorization"] = f"Bearer {TOKEN}"
 
-RETROBAT_ROOT = AUTO_ROMS_ROOT
+RETROBAT_ROOT = Path(r"C:\RetroBat") if Path(r"C:\RetroBat").is_dir() else AUTO_ROMS_ROOT
 
 COLORS = {
     "bg": (20, 20, 25), "panel": (40, 40, 50), "text": (240, 240, 240),
@@ -359,9 +363,12 @@ class RommDropGUI:
             files = game.get('files', [])
 
             if not files:
-                self.status_msg = "No files found for this game."
-                self.is_downloading = False
-                return
+                fname = game.get('fs_name') or game.get('name')
+                if not fname:
+                    self.status_msg = "No files found for this game."
+                    self.is_downloading = False
+                    return
+                files = [{'file_name': fname}]
 
             use_subfolder = len(files) > 1
             game_subfolder = game.get('fs_name') or game.get('name', 'unknown')
@@ -372,9 +379,9 @@ class RommDropGUI:
                     continue
 
                 if use_subfolder:
-                    save_path = RETROBAT_ROOT / folder / game_subfolder / filename
+                    save_path = RETROBAT_ROOT / 'roms' / folder / game_subfolder / filename
                 else:
-                    save_path = RETROBAT_ROOT / folder / filename
+                    save_path = RETROBAT_ROOT / 'roms' / folder / filename
 
                 save_path.parent.mkdir(parents=True, exist_ok=True)
                 self.status_msg = f"Downloading {i+1}/{len(files)}: {filename}"

@@ -190,8 +190,11 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("register", help="verify or register the sync device")
     sub.add_parser("plan", help="scan + negotiate only (read-only, no writes)")
     s = sub.add_parser("sync", help="scan, negotiate, execute")
-    s.add_argument("--allow-upload", action="store_true",
-                   help="permit uploads (default: downloads only)")
+    s.add_argument("--no-upload", dest="allow_upload", action="store_false",
+                   help="disable uploads (default: uploads enabled)")
+    s.add_argument("--allow-upload", dest="allow_upload", action="store_true",
+                   help=argparse.SUPPRESS)
+    s.set_defaults(allow_upload=True)
     s.add_argument("--policy", choices=sorted(POLICIES), default="auto",
                    help="conflict policy (default: auto)")
     s.add_argument("--dry-run", action="store_true",

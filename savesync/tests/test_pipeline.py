@@ -42,6 +42,10 @@ def test_scan_negotiate_platform_scope_drops_unmapped_ops(tmp_path):
     client.platforms = [{"id": 1, "fs_slug": "gbc", "slug": "gbc"},
                         {"id": 2, "fs_slug": "gba", "slug": "gba"}]
     cfg = _tmp_cfg(tmp_path)
+    # a local save on the scoped platform so the targeted scan resolves rom 892
+    save = tmp_path / "saves" / "gbc" / "Game 892.srm"
+    save.parent.mkdir(parents=True, exist_ok=True)
+    save.write_bytes(b"local")
     _, plan = scan_negotiate(client, cfg, tmp_path, platform="gbc")
     assert {o.rom_id for o in plan.operations} == {892}
     assert plan.total_download == 1
@@ -117,8 +121,8 @@ def test_session_toggle_upload_and_execute_progress(tmp_path):
     eng, plan = scan_negotiate(client, cfg, tmp_path)
     session = SyncSession(eng, plan, client)
 
-    assert session.allow_upload is False
-    assert session.toggle_upload() is True
+    assert session.allow_upload is True
+    assert session.toggle_upload() is False
 
     session.execute(dry_run=False)
     assert session.phase == "done"

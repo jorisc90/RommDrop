@@ -8,6 +8,7 @@ filtering, and underscore-skip of the save_dirs map.
 
 from __future__ import annotations
 
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -28,7 +29,7 @@ from savesync.cli import (
     orchestrate,
     resolve_creds,
 )
-from savesync.engine import CONFLICT_SKIP, CONFLICT_AUTO
+from savesync.engine import CONFLICT_SKIP, CONFLICT_AUTO, CONFLICT_TAKE_SERVER
 from savesync.models import LocalSave
 
 
@@ -55,6 +56,10 @@ class FakeClient:
         self.calls.append(f"list_roms:{platform_id}")
         return [{"id": rid, "fs_slug": slug, "slug": slug}
                 for rid, (slug, pid) in self.roms.items() if pid == platform_id]
+
+    def search_roms(self, platform_id, search_term):
+        self.calls.append(f"search_roms:{platform_id}:{search_term}")
+        return self.list_roms(platform_id)
 
     def get_device(self, device_id):
         self.calls.append(f"get_device:{device_id}")
@@ -207,15 +212,19 @@ def _tmp_cfg(root: Path) -> SyncConfig:
 
 
 def test_orchestrate_downloads_into_per_platform_dir(tmp_path):
-    client = FakeClient(roms={892: ("gbc", 1)})
+    client = FakeClient(roms={892: ("gbc", 1)}, conflicts=[(892, "srm")])
     cfg = _tmp_cfg(tmp_path)
+    # a matching local save makes the targeted scan find rom 892
+    save = tmp_path / "saves" / "gbc" / "Game 892.srm"
+    save.parent.mkdir(parents=True, exist_ok=True)
+    save.write_bytes(b"local")
     result = orchestrate(client, cfg, tmp_path, execute=True,
-                         allow_upload=False, policy=CONFLICT_SKIP)
+                         allow_upload=False, policy=CONFLICT_TAKE_SERVER)
     gbc_dir = tmp_path / "saves" / "gbc"
     assert gbc_dir.exists()
     # destination resolves through save_root + per-platform dir
-    assert any("saves/gbc" in c for c in client.calls if c.startswith("download:"))
-    assert not gbc_dir.exists() or list(gbc_dir.glob("*.srm"))
+    assert any(("saves" + os.sep + "gbc") in c for c in client.calls if c.startswith("download:"))
+    assert list(gbc_dir.glob("*.srm"))
     assert result.downloaded == 1
 
 

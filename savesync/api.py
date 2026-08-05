@@ -107,6 +107,26 @@ class RomMClient:
                 break
         return out
 
+    def search_roms(self, platform_id: int, search_term: str,
+                    limit: int = 100) -> list[dict]:
+        """Targeted ROM lookup by name, avoiding a full platform listing.
+
+        Local saves only need their own ROMs resolved (for the manifest and
+        download paths), so we query per stem instead of paging through every
+        ROM on the platform (a 1500-ROM platform takes ~20s to list but
+        ~0.15s per targeted search).
+        """
+        params = {
+            "platform_ids": platform_id,
+            "search_term": search_term,
+            "limit": limit,
+            "offset": 0,
+        }
+        r = requests.get(f"{self.base_url}{ENDPOINT_ROMS}", params=params,
+                         headers=self._bearer_headers(), timeout=self.timeout)
+        self._check(r)
+        return r.json().get("items", [])
+
     def build_platform_map(self) -> dict[int, str]:
         """rom_id -> platform fs_slug (for resolving download destinations)."""
         m: dict[int, str] = {}

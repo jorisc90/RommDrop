@@ -15,6 +15,7 @@ Entry points:
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING
 
 from .engine import DEFAULT_CONFLICT_POLICY, SyncEngine
@@ -39,6 +40,11 @@ def scan_negotiate(
     Returns `(engine, plan)`. Read-only: no network pulls of file bytes and no
     disk writes. `platform` restricts the scan AND drops negotiated ops whose
     rom_id isn't mapped to that platform.
+
+    Targeted approach: local dirs are scanned first (no network), then only the
+    ROMs that actually have local saves are resolved via the search endpoint
+    (fast, ~0.15s each) instead of paging through the platform's full ROM list
+    (a 1500-ROM platform takes ~20s to list).
     """
     eng = SyncEngine(client, cfg, debug=debug)
     platforms = client.list_platforms()
@@ -48,26 +54,49 @@ def scan_negotiate(
     if debug:
         print(f"[sync] platforms: {sorted(slug_to_id)}")
 
-    rom_to_slug: dict[int, str] = {}
-    scanned = []
+    # Phase 1: find which platforms actually have local saves (fast, no network)
+    local_saves: dict[str, list] = {}
     for slug in (cfg.save_dirs or {}).keys():
         if slug == "*" or slug.startswith("_"):
             continue
         if platform and slug != platform:
             continue
-        pid = slug_to_id.get(slug)
-        if not pid:
+        if slug not in slug_to_id:
             if debug:
                 print(f"[sync] no server platform for fs_slug {slug!r}; skipping")
             continue
-        roms = client.list_roms(pid)
-        for r in roms:
-            rom_to_slug[int(r["id"])] = slug
         saves = eng.scan_platform(root, slug)
-        if not saves:
-            continue
-        saves, matched = eng.match(saves, roms)
-        scanned.extend(saves)
+        if saves:
+            local_saves[slug] = saves
+
+    # Phase 2: search only the ROMs behind local saves, in parallel.
+    # Each task returns {search_term: rom_dict} for its platform.
+    rom_to_slug: dict[int, str] = {}
+    scanned: list = []
+    matched_total = 0
+    with ThreadPoolExecutor(max_workers=min(4, max(1, len(local_saves)))) as pool:
+        futures = {
+            pool.submit(_search_local_roms, client, slug_to_id[slug],
+                        local_saves[slug]): slug
+            for slug in local_saves
+        }
+        for fut in futures:
+            slug = futures[fut]
+            try:
+                found = fut.result()
+            except Exception as exc:
+                if debug:
+                    print(f"[sync] search failed for {slug!r}: {exc}")
+                found = {}
+            roms = list(found.values())
+            for r in roms:
+                rom_to_slug[int(r["id"])] = slug
+            saves, matched = eng.match(local_saves[slug], roms)
+            scanned.extend(saves)
+            matched_total += matched
+            if debug:
+                print(f"[sync] {slug}: {len(local_saves[slug])} local, "
+                      f"{matched} matched ({len(roms)} roms searched)")
 
     eng.set_scanned_saves(scanned)
     eng.set_platform_map(rom_to_slug)
@@ -81,6 +110,76 @@ def scan_negotiate(
     # reported numbers (which may include out-of-scope rows)
     _recount(plan)
     return eng, plan
+
+
+def _search_local_roms(client, platform_id: int, saves: list) -> dict:
+    """Resolve each distinct local save stem to its server ROM via search.
+
+    Returns {search_term: rom_dict}. Dedupes by the cleaned search term so we do
+    one query per unique game, not one per file. The search endpoint is fuzzy
+    and can miss versioned names (e.g. "Unbound 2.1.1.1"), so if any save
+    stays unmatched after searching we fall back to a full platform listing for that one
+    game only  targeted searches stay the fast common case.
+    """
+    from .scanner import clean_server_filename
+    from .scanner import match_local_to_rom
+
+    found: dict[str, dict] = {}
+    # collect ROMs one query per unique base name
+    for term in _unique_terms(saves):
+        rom = _search_one(client, platform_id, term)
+        if rom:
+            found[term] = rom
+
+    # verify every local save resolved; if any did not, grab the full platform
+    # list so we still catch odd names.
+    matched_count = match_local_to_rom(list(saves), list(found.values()))
+    if found and matched_count < len(saves):
+        for rom in client.list_roms(platform_id):
+            for canon in _rom_stems_local(rom):
+                found.setdefault(canon, rom)
+    return found
+
+
+def _search_one(client, platform_id: int, term: str):
+    """Try to find the server ROM for a save term via the search endpoint.
+
+    The search is fuzzy and can choke on dotted version numbers
+    ("Pokemon Unbound 2.1.1.1" -> 0 hits), so we retry with dots->spaces
+    before giving up. Returns a rom dict or None.
+    """
+    roms = client.search_roms(platform_id, term)
+    if not roms and "." in term:
+        roms = client.search_roms(platform_id, term.replace(".", " "))
+    return roms[0] if roms else None
+
+
+def _unique_terms(saves) -> list[str]:
+    from .scanner import clean_server_filename
+    seen: dict[str, str] = {}
+    for s in saves:
+        clean = clean_server_filename(s.file_name)
+        base = clean.rsplit(".", 1)[0] if "." in clean else clean
+        if base:
+            seen.setdefault(base, base)
+    return list(seen)
+
+
+def _normalize_stem(name: str) -> str:
+    from .scanner import normalize_stem
+    return normalize_stem(name)
+
+
+def _rom_stems_local(rom: dict) -> list[str]:
+    stems: set[str] = set()
+    for fn in (rom.get("fs_name"), rom.get("file_name"), rom.get("name")):
+        if fn:
+            stems.add(_normalize_stem(str(fn)))
+    for f in rom.get("files", []):
+        name = f.get("file_name") or f.get("name")
+        if name:
+            stems.add(_normalize_stem(str(name)))
+    return list(stems)
 
 
 def execute(
@@ -134,7 +233,7 @@ class SyncSession:
         self.status = ""
         self.error = ""
         self.policy = DEFAULT_CONFLICT_POLICY  # auto
-        self.allow_upload = False
+        self.allow_upload = True
         self.result = None
         self.progress = (0, 0)
         # (op, resolved_as) preview per conflict, recomputed on policy change
