@@ -28,6 +28,40 @@ RommDrop is a dead simple ROM downloader for RetroBat and EmulationStation. It p
     "password": "YourPassword"
 }
 
+***Authentication***
+
+RomM uses an API key to authenticate. You can authenticate two ways:
+
+1. **Password / API key** (recommended for RomM) — put your key in the `password`
+   field and leave `username` empty. RomMDrop sends it as a `Bearer` token, which
+   is what current RomM servers expect:
+
+   {
+       "romm_url": "https://romm.example.com",
+       "username": "",
+       "password": "rmm_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+   }
+
+2. **Username + password (basic auth)** — only works on legacy RomM setups that
+   still accept basic auth:
+
+   {
+       "romm_url": "https://romm.example.com",
+       "username": "YourUsername",
+       "password": "YourPassword"
+   }
+
+Notes:
+- If `password` looks like an API key (starts with `rmm_`), RomMDrop automatically
+  sends it as a `Bearer` token to `/api`. Otherwise it falls back to HTTP basic
+  auth. For reliable access on RomM 5.x you should use a token in the `password`
+  field.
+- Find your token in RomM under Settings -> API Keys. Generate one and paste it
+  into the `password` field.
+- Keep config.json out of version control (it is already covered by .gitignore)
+  so you never commit a live token.
+- The server URL must not include a trailing `/api` — RomMDrop appends it for you.
+
 
 ***Navigation***
 
